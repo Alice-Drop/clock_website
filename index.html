@@ -411,12 +411,47 @@
             color: var(--text-secondary);
             cursor: pointer;
             margin-bottom: 8px;
+            transition: color 0.2s;
+            user-select: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        .city-selector:hover {
+            color: var(--text-primary);
+        }
+
+        .city-selector:active {
+            opacity: 0.7;
         }
 
         .city-selector svg {
             width: 14px;
             height: 14px;
             fill: var(--text-secondary);
+            transition: fill 0.2s;
+        }
+
+        .city-selector:hover svg {
+            fill: var(--text-primary);
+        }
+
+        .city-selector .locate-icon {
+            width: 11px;
+            height: 11px;
+            opacity: 0.5;
+            flex-shrink: 0;
+        }
+
+        /* 定位中动画 */
+        .city-selector.locating .locate-icon {
+            animation: spin 1s linear infinite;
+            opacity: 1;
+            fill: var(--accent);
+        }
+
+        @keyframes spin {
+            from { transform: rotate(0deg); }
+            to { transform: rotate(360deg); }
         }
 
         /* 响应式：小屏设备使用动态视口高度，避免地址栏影响 */
@@ -471,9 +506,10 @@
 
                 <!-- 天气 -->
                 <div class="weather-card">
-                    <div class="city-selector" onclick="changeCity()">
+                    <div class="city-selector" onclick="changeCity()" title="点击重新定位">
                         <svg viewBox="0 0 24 24"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg>
                         <span id="city-name">北京</span>
+                        <svg class="locate-icon" viewBox="0 0 24 24" width="12" height="12"><path fill="currentColor" d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></svg>
                     </div>
                     <div class="weather-main">
                         <div class="weather-left">
@@ -639,9 +675,10 @@
         let lastLon = null;
         let lastCity = '北京';
         let weatherFetching = false;
+        let locationSource = 'none';
 
-        // 通过浏览器 GPS 获取精确位置（会弹出权限请求）
-        function getBrowserLocation() {
+        // ============ GPS 高精度定位（仅用户主动点击时触发） ============
+        function getGPSLocation() {
             return new Promise((resolve, reject) => {
                 if (!navigator.geolocation) {
                     reject(new Error('浏览器不支持定位'));
@@ -652,93 +689,209 @@
                         resolve({
                             lat: pos.coords.latitude,
                             lon: pos.coords.longitude,
+                            accuracy: pos.coords.accuracy,
                             source: 'gps'
                         });
                     },
-                    (err) => {
-                        reject(new Error(`定位权限被拒绝或超时：${err.message}`));
-                    },
-                    { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+                    (err) => reject(err),
+                    {
+                        enableHighAccuracy: true,
+                        timeout: 30000,
+                        maximumAge: 0
+                    }
                 );
             });
         }
 
-        // 通过 IP 获取粗略位置（降级方案）
-        async function getIPLocation() {
-            const locRes = await fetch('https://ipapi.co/json/');
-            if (!locRes.ok) throw new Error('IP 定位失败');
-            const data = await locRes.json();
-            return {
-                lat: data.latitude || 39.9042,
-                lon: data.longitude || 116.4074,
-                city: data.city || '北京',
-                source: 'ip'
-            };
+        // ============ IP 定位（三重回退） ============
+        async function getIPLocationMulti() {
+            const services = [
+                // 服务1: ipapi.co
+                async () => {
+                    const res = await fetch('https://ipapi.co/json/', { signal: AbortSignal.timeout(5000) });
+                    if (!res.ok) throw new Error('ipapi 失败');
+                    const d = await res.json();
+                    if (!d.latitude || !d.longitude) throw new Error('ipapi 无坐标');
+                    return { lat: d.latitude, lon: d.longitude, city: d.city, source: 'ip-api-co' };
+                },
+                // 服务2: ip-api.com（支持中文）
+                async () => {
+                    const res = await fetch('https://ip-api.com/json/?fields=lat,lon,city,country,countryCode&lang=zh-CN', { signal: AbortSignal.timeout(5000) });
+                    if (!res.ok) throw new Error('ip-api 失败');
+                    const d = await res.json();
+                    if (!d.lat || !d.lon) throw new Error('ip-api 无坐标');
+                    return { lat: d.lat, lon: d.lon, city: d.city, source: 'ip-apicom' };
+                },
+                // 服务3: ip.sb（国内解析较好）
+                async () => {
+                    const res = await fetch('https://api.ip.sb/geoip/', { signal: AbortSignal.timeout(5000) });
+                    if (!res.ok) throw new Error('ip.sb 失败');
+                    const d = await res.json();
+                    if (!d.latitude || !d.longitude) throw new Error('ip.sb 无坐标');
+                    return { lat: d.latitude, lon: d.longitude, city: d.city, source: 'ip-ipsb' };
+                }
+            ];
+
+            for (const svc of services) {
+                try {
+                    const result = await svc();
+                    if (result.lat && result.lon) {
+                        return {
+                            lat: result.lat,
+                            lon: result.lon,
+                            city: result.city || null,
+                            source: result.source
+                        };
+                    }
+                } catch (e) {
+                    console.warn('[定位] IP 服务失败，尝试下一个：', e.message);
+                }
+            }
+            return { lat: 39.9042, lon: 116.4074, city: '北京', source: 'fallback' };
         }
 
-        // 根据经纬度反查城市名
+        // ============ 逆地理编码 ============
         async function reverseGeocode(lat, lon) {
             try {
                 const res = await fetch(
-                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=zh`,
-                    { headers: { 'User-Agent': 'ClockWeatherApp/1.0' } }
+                    `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&accept-language=zh&zoom=10`,
+                    { headers: { 'User-Agent': 'ClockWeatherApp/1.0 (clock.alicedrop.site)' } }
                 );
                 if (!res.ok) throw new Error('逆地理编码失败');
                 const data = await res.json();
-                // 优先取 city，其次 town、village、county
-                return data.address.city || data.address.town || data.address.village || 
-                       data.address.county || data.address.state || '未知';
+                const addr = data.address || {};
+                return addr.city || addr.town || addr.county || 
+                       addr.state || addr.state_district || addr.province || null;
             } catch {
                 return null;
             }
         }
 
-        async function fetchLocationAndWeather() {
+        // ============ 获取天气数据并更新 UI ============
+        async function fetchWeatherAndUpdate(lat, lon, city, source) {
+            const weatherRes = await fetch(
+                `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+                `&current=temperature_2m,relative_humidity_2m,weather_code,surface_pressure,wind_speed_10m,wind_direction_10m` +
+                `&timezone=auto`
+            );
+            if (!weatherRes.ok) throw new Error('天气 API 失败');
+            const cur = (await weatherRes.json()).current;
+
+            lastLat = lat;
+            lastLon = lon;
+            lastCity = city;
+            locationSource = source;
+
+            const info = getWeatherInfo(cur.weather_code);
+            const windDir = windDirectionText(cur.wind_direction_10m || 0);
+
+            updateWeatherUI(
+                city,
+                Math.round(cur.temperature_2m),
+                `${info.desc} · 湿度${cur.relative_humidity_2m}%`,
+                `${cur.relative_humidity_2m}%`,
+                `${windDir} ${cur.wind_speed_10m}km/h`,
+                `${Math.round(cur.surface_pressure)}hPa`,
+                info.type
+            );
+
+            console.log(`[天气] 已更新（${source}）：${city} ${Math.round(cur.temperature_2m)}°C ${info.desc}`);
+        }
+
+        // ============ 首次加载：纯 IP 定位（绝不碰 GPS） ============
+        async function initialLocate() {
+            weatherFetching = true;
+            const cityEl = document.getElementById('city-name');
+            cityEl.textContent = '定位中…';
+            cityEl.style.opacity = '0.6';
+
+            try {
+                const ip = await getIPLocationMulti();
+                const lat = ip.lat;
+                const lon = ip.lon;
+                let city = ip.city;
+                if (!city || city === '未知') {
+                    city = await reverseGeocode(lat, lon) || '北京';
+                }
+                await fetchWeatherAndUpdate(lat, lon, city, ip.source);
+            } catch (e) {
+                console.warn('[天气] 初始加载失败：', e.message);
+            } finally {
+                cityEl.style.opacity = '1';
+                weatherFetching = false;
+            }
+        }
+
+        // ============ 手动刷新定位：GPS 最高精度（由用户点击触发） ============
+        async function changeCity() {
             if (weatherFetching) return;
             weatherFetching = true;
 
-            let lat, lon, city, source;
+            const cityEl = document.getElementById('city-name');
+            const citySelector = document.querySelector('.city-selector');
+            const origCity = cityEl.textContent;
+            cityEl.textContent = 'GPS定位中…';
+            cityEl.style.opacity = '0.6';
+            if (citySelector) citySelector.classList.add('locating');
 
             try {
-                // 步骤1：优先使用浏览器 GPS 定位（会弹出权限请求）
+                let lat, lon, city, source;
+
+                // 直接使用 GPS 最高精度
                 try {
-                    const geo = await getBrowserLocation();
+                    const geo = await getGPSLocation();
                     lat = geo.lat;
                     lon = geo.lon;
                     source = 'gps';
-                    // GPS 定位成功，反查城市名
-                    const geoCity = await reverseGeocode(lat, lon);
-                    city = geoCity || lastCity;
-                } catch (geoErr) {
-                    console.warn('[天气] GPS 定位失败，降级为 IP 定位：', geoErr.message);
-                    // 降级：IP 定位
-                    const ip = await getIPLocation();
+                    console.log(`[定位] GPS 成功，精度 ${Math.round(geo.accuracy)}m`);
+                } catch (gpsErr) {
+                    console.warn('[定位] GPS 失败（', gpsErr.message, '），回退 IP');
+                    // GPS 失败则回退 IP
+                    const ip = await getIPLocationMulti();
                     lat = ip.lat;
                     lon = ip.lon;
                     city = ip.city;
-                    source = 'ip';
+                    source = ip.source;
                 }
 
-                // 步骤2：获取天气
+                // GPS 成功但没有城市名，逆地理编码
+                if (!city) {
+                    city = await reverseGeocode(lat, lon);
+                    if (!city || city === '未知') city = lastCity;
+                }
+
+                await fetchWeatherAndUpdate(lat, lon, city, source);
+            } catch (e) {
+                console.warn('[天气] 手动刷新失败：', e.message);
+                cityEl.textContent = origCity;
+            } finally {
+                cityEl.style.opacity = '1';
+                if (citySelector) citySelector.classList.remove('locating');
+                weatherFetching = false;
+            }
+        }
+
+        initialLocate();
+
+        // 每 5 分钟自动更新天气（不重新定位，仅刷新天气数据）
+        const WEATHER_INTERVAL_MS = 5 * 60 * 1000;
+        setInterval(async () => {
+            if (weatherFetching) return;
+            weatherFetching = true;
+            try {
+                const lat = lastLat || 39.9042;
+                const lon = lastLon || 116.4074;
                 const weatherRes = await fetch(
                     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
                     `&current=temperature_2m,relative_humidity_2m,weather_code,surface_pressure,wind_speed_10m,wind_direction_10m` +
                     `&timezone=auto`
                 );
-                if (!weatherRes.ok) throw new Error('天气 API 失败');
-                const weatherData = await weatherRes.json();
-                const cur = weatherData.current;
-
-                // 更新缓存
-                lastLat = lat;
-                lastLon = lon;
-                lastCity = city;
-
+                if (!weatherRes.ok) throw new Error('天气刷新失败');
+                const cur = (await weatherRes.json()).current;
                 const info = getWeatherInfo(cur.weather_code);
                 const windDir = windDirectionText(cur.wind_direction_10m || 0);
-
                 updateWeatherUI(
-                    city,
+                    lastCity,
                     Math.round(cur.temperature_2m),
                     `${info.desc} · 湿度${cur.relative_humidity_2m}%`,
                     `${cur.relative_humidity_2m}%`,
@@ -746,26 +899,13 @@
                     `${Math.round(cur.surface_pressure)}hPa`,
                     info.type
                 );
-
-                console.log(`[天气] 已更新（${source}）：${city} ${Math.round(cur.temperature_2m)}°C ${info.desc}（${new Date().toLocaleTimeString()}）`);
+                console.log(`[天气] 定时刷新完成（${new Date().toLocaleTimeString()}）`);
             } catch (e) {
-                console.warn('[天气] 获取失败，将稍后重试：', e.message);
+                console.warn('[天气] 定时刷新失败：', e.message);
             } finally {
                 weatherFetching = false;
             }
-        }
-
-        // 手动刷新天气（点击城市名触发）
-        function changeCity() {
-            fetchLocationAndWeather();
-        }
-
-        // 首次加载时获取天气
-        fetchLocationAndWeather();
-
-        // 每 5 分钟自动更新天气
-        const WEATHER_INTERVAL_MS = 5 * 60 * 1000;
-        setInterval(fetchLocationAndWeather, WEATHER_INTERVAL_MS);
+        }, WEATHER_INTERVAL_MS);
 
         // ========== 日历 ==========
         let currentDate = new Date();
