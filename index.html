@@ -1002,53 +1002,50 @@
 
         // ========== 自动全屏 ==========
         (function autoFullscreen() {
-            // 1. 页面加载时滚动一下，收起安卓 Chrome 地址栏
+            // 1. 滚动收起地址栏（所有浏览器通用）
             window.addEventListener('load', () => {
-                // 短暂延迟后滚动，确保 DOM 渲染完成
-                setTimeout(() => {
-                    window.scrollTo(0, 1);
-                }, 100);
+                setTimeout(() => { window.scrollTo(0, 1); }, 100);
+                setTimeout(() => { window.scrollTo(0, 1); }, 300);
+                setTimeout(() => { window.scrollTo(0, 1); }, 1000);
             });
 
-            // 2. 首次用户交互（点击/触摸）时触发全屏 API
-            let fullscreenRequested = false;
+            // 2. 全屏 — 只用 click，不用 touchstart
+            //    原因：Firefox Android 只认 click 为用户手势，touchstart 会抢跑并失败，
+            //    导致后续 click 被 fullscreenRequested 标志位拦截
+            let fullscreenTried = false;
 
-            function requestFullscreen() {
-                if (fullscreenRequested) return;
-                fullscreenRequested = true;
+            function tryFullscreen() {
+                if (fullscreenTried) return;
+                fullscreenTried = true;
 
                 const el = document.documentElement;
-                if (el.requestFullscreen) {
-                    el.requestFullscreen().catch(() => {});
-                } else if (el.webkitRequestFullscreen) {
-                    el.webkitRequestFullscreen();
+                // 收集所有可能的 API（Firefox 可能用 unprefixed 也可能用 moz 前缀）
+                const api = el.requestFullscreen
+                    || el.webkitRequestFullscreen
+                    || el.mozRequestFullScreen
+                    || el.msRequestFullscreen;
+
+                if (api) {
+                    // 同步调用，不用 .catch() 干扰（Firefox 要求事件处理器内同步发起）
+                    try { api.call(el); } catch (_) {}
                 }
             }
 
-            // 监听首次触摸/点击
-            const events = ['touchstart', 'click'];
-            function onFirstInteraction(e) {
-                // 排除城市名点击（留给天气刷新）
+            document.addEventListener('click', function handler(e) {
+                // 不让城市名点击抢占全屏手势
                 if (e.target.closest('.city-selector')) return;
-                requestFullscreen();
-                events.forEach(ev => document.removeEventListener(ev, onFirstInteraction));
-            }
-            events.forEach(ev => document.addEventListener(ev, onFirstInteraction));
+                tryFullscreen();
+                document.removeEventListener('click', handler);
+            });
 
-            // 3. 备用：2 秒后如果还没触发，延迟到 3 秒再试
-            //    （有些安卓浏览器允许在短时间内的非直接用户手势触发）
-            setTimeout(() => {
-                if (!fullscreenRequested && document.fullscreenElement === null) {
-                    // 不再主动调用，因为需要用户手势
-                    console.log('[全屏] 等待用户首次交互后自动进入全屏');
-                }
-            }, 2000);
-
-            // 4. 监听全屏变化
-            document.addEventListener('fullscreenchange', () => {
-                if (!document.fullscreenElement) {
-                    // 用户退出了全屏，不做任何事，让他们自行选择
-                }
+            // 3. 监听全屏状态变化（含 Firefox 前缀）
+            ['fullscreenchange', 'webkitfullscreenchange', 'mozfullscreenchange'].forEach(name => {
+                document.addEventListener(name, () => {
+                    const fs = document.fullscreenElement
+                        || document.webkitFullscreenElement
+                        || document.mozFullScreenElement;
+                    console.log('[全屏]', fs ? '已进入全屏' : '已退出全屏');
+                });
             });
         })();
     </script>
