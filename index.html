@@ -2,8 +2,17 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, minimal-ui">
     <title>Clock & Weather</title>
+
+    <!-- PWA 全屏 -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0d0d0d">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="天气时钟">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%230d0d0d'/><text x='50' y='62' font-size='48' text-anchor='middle' fill='%234fc3f7' font-family='sans-serif'>☀</text></svg>">
     <style>
         * {
             margin: 0;
@@ -990,6 +999,58 @@
         }
 
         renderCalendar();
+
+        // ========== 自动全屏 ==========
+        (function autoFullscreen() {
+            // 1. 页面加载时滚动一下，收起安卓 Chrome 地址栏
+            window.addEventListener('load', () => {
+                // 短暂延迟后滚动，确保 DOM 渲染完成
+                setTimeout(() => {
+                    window.scrollTo(0, 1);
+                }, 100);
+            });
+
+            // 2. 首次用户交互（点击/触摸）时触发全屏 API
+            let fullscreenRequested = false;
+
+            function requestFullscreen() {
+                if (fullscreenRequested) return;
+                fullscreenRequested = true;
+
+                const el = document.documentElement;
+                if (el.requestFullscreen) {
+                    el.requestFullscreen().catch(() => {});
+                } else if (el.webkitRequestFullscreen) {
+                    el.webkitRequestFullscreen();
+                }
+            }
+
+            // 监听首次触摸/点击
+            const events = ['touchstart', 'click'];
+            function onFirstInteraction(e) {
+                // 排除城市名点击（留给天气刷新）
+                if (e.target.closest('.city-selector')) return;
+                requestFullscreen();
+                events.forEach(ev => document.removeEventListener(ev, onFirstInteraction));
+            }
+            events.forEach(ev => document.addEventListener(ev, onFirstInteraction));
+
+            // 3. 备用：2 秒后如果还没触发，延迟到 3 秒再试
+            //    （有些安卓浏览器允许在短时间内的非直接用户手势触发）
+            setTimeout(() => {
+                if (!fullscreenRequested && document.fullscreenElement === null) {
+                    // 不再主动调用，因为需要用户手势
+                    console.log('[全屏] 等待用户首次交互后自动进入全屏');
+                }
+            }, 2000);
+
+            // 4. 监听全屏变化
+            document.addEventListener('fullscreenchange', () => {
+                if (!document.fullscreenElement) {
+                    // 用户退出了全屏，不做任何事，让他们自行选择
+                }
+            });
+        })();
     </script>
 </body>
 </html>
