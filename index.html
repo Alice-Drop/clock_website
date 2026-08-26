@@ -613,10 +613,32 @@
             // 星期
             const weekdays = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'];
             document.getElementById('weekday').textContent = weekdays[now.getDay()];
+
+            // 跨天 / 跨月 / 跨年时自动刷新日历
+            checkDateRollover(now);
         }
 
-        setInterval(updateClock, 1000);
-        updateClock();
+        // 记录上一次渲染日历的日期键（YYYY-M-D），用于跨天检测
+        let lastRenderedDateKey = '';
+
+        // 检测日期变更：跨天时刷新"今日"高亮；跨月/跨年时自动翻到当前月/年
+        function checkDateRollover(now) {
+            const dateKey = `${now.getFullYear()}-${now.getMonth()}-${now.getDate()}`;
+            if (dateKey === lastRenderedDateKey) return;
+
+            lastRenderedDateKey = dateKey;
+
+            // 同步"今天"状态
+            currentDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+
+            // 若当前显示的月份已不是实际月份，自动翻页到当前月/年
+            if (displayDate.getFullYear() !== now.getFullYear() || displayDate.getMonth() !== now.getMonth()) {
+                displayDate = new Date(now.getFullYear(), now.getMonth(), 1);
+            }
+
+            renderCalendar();
+            console.log(`[日历] 已自动更新至 ${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`);
+        }
 
         // ========== 天气 ==========
         // 天气图标 SVG 模板
@@ -998,7 +1020,14 @@
             renderCalendar();
         }
 
+        // 记录初始日期，避免启动时钟时重复渲染
+        lastRenderedDateKey = `${currentDate.getFullYear()}-${currentDate.getMonth()}-${currentDate.getDate()}`;
         renderCalendar();
+
+        // ========== 启动时钟 ==========
+        // 放在脚本末尾：确保 currentDate / displayDate / renderCalendar 均已初始化，可安全进行跨天检测
+        setInterval(updateClock, 1000);
+        updateClock();
 
         // ========== 自动全屏 ==========
         (function autoFullscreen() {
